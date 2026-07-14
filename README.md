@@ -32,7 +32,7 @@ C:\tmp\shentuji-android-build\app\outputs\apk\debug\app-debug.apk
 
 ## 安装
 
-可以从 [GitHub Releases 下载 APK](https://github.com/GodBook/shentuji/releases/latest/download/shentuji-debug.apk)。本地构建的 APK 位于 `artifacts\神图集-debug.apk`，该二进制文件通过 Release 发布，不写入 Git 历史。
+已经构建好的 APK 位于 [`artifacts/神图集-debug.apk`](artifacts/神图集-debug.apk)，可以直接下载到 Android 手机安装。
 
 把 APK 发送到 Android 手机并打开即可安装。若手机通过 USB 连接且已启用“USB 调试”，也可以运行：
 

@@ -6,4 +6,3 @@ captures/
 *.iml
 *.jks
 *.keystore
-artifacts/*.apk
