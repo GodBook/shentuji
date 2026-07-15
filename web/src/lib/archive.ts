@@ -34,6 +34,8 @@ export const backupManifestSchema = z.object({
         createdAt: dateString,
         keywords: z.array(z.string().max(64)).max(30),
         groupName: z.string().trim().min(1).max(40).nullable(),
+        favorite: z.boolean().optional().default(false),
+        rating: z.number().int().min(0).max(5).optional().default(0),
       }),
     )
     .max(10_000),
@@ -74,6 +76,8 @@ export function createBackupArchive(ids?: string[]) {
       createdAt: image.createdAt,
       keywords: image.keywords,
       groupName: image.group?.name ?? null,
+      favorite: image.favorite,
+      rating: image.rating,
     });
     archive.file(path.join(paths.originals, stored.storageName), {
       name: archivePath,
@@ -142,6 +146,8 @@ export async function importBackupArchive(buffer: Buffer): Promise<ImportReport>
         keywords: item.keywords,
         groupId,
         createdAt: item.createdAt,
+        favorite: item.favorite,
+        rating: item.rating,
       });
       report.imported += 1;
     } catch (error) {

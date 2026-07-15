@@ -23,6 +23,8 @@ export const groupBodySchema = z.object({ name: groupNameSchema });
 export const imageUpdateSchema = z.object({
   keywords: keywordArraySchema.optional(),
   groupId: z.string().uuid().nullable().optional(),
+  favorite: z.boolean().optional(),
+  rating: z.number().int().min(0).max(5).optional(),
 });
 
 export const bulkActionSchema = z.discriminatedUnion("action", [
@@ -42,7 +44,25 @@ export const bulkActionSchema = z.discriminatedUnion("action", [
     groupId: z.string().uuid().nullable(),
   }),
   z.object({
+    action: z.literal("setFavorite"),
+    ids: z.array(z.string().uuid()).min(1).max(10_000),
+    favorite: z.boolean(),
+  }),
+  z.object({
+    action: z.literal("setRating"),
+    ids: z.array(z.string().uuid()).min(1).max(10_000),
+    rating: z.number().int().min(0).max(5),
+  }),
+  z.object({
     action: z.literal("delete"),
+    ids: z.array(z.string().uuid()).min(1).max(10_000),
+  }),
+  z.object({
+    action: z.literal("restore"),
+    ids: z.array(z.string().uuid()).min(1).max(10_000),
+  }),
+  z.object({
+    action: z.literal("deletePermanent"),
     ids: z.array(z.string().uuid()).min(1).max(10_000),
   }),
 ]);

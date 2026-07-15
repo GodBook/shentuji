@@ -13,6 +13,9 @@ export type ImageItem = {
   width: number;
   height: number;
   createdAt: string;
+  deletedAt: string | null;
+  favorite: boolean;
+  rating: number;
   group: { id: string; name: string } | null;
   keywords: string[];
   thumbnailUrl: string;
@@ -22,8 +25,17 @@ export type ImageItem = {
 export type ImageFilters = {
   groupId?: string | null;
   keywords?: string[];
+  trash?: "exclude" | "only" | "include";
+  favorite?: boolean;
+  minRating?: number;
   cursor?: string | null;
   limit?: number;
+};
+
+export type SimilarImageMatch = {
+  image: ImageItem;
+  distance: number;
+  similarity: number;
 };
 
 export type ImageListResult = {

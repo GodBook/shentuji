@@ -11,6 +11,7 @@ import {
   type InsertImageInput,
 } from "@/lib/library";
 import { getDataPaths, MAX_IMAGE_BYTES } from "@/lib/paths";
+import { computePerceptualHash } from "@/lib/similarity";
 
 const ALLOWED_TYPES = {
   "image/jpeg": "jpg",
@@ -67,8 +68,11 @@ export async function storeImageBuffer(input: {
   keywords?: string[];
   groupId?: string | null;
   createdAt?: string;
+  favorite?: boolean;
+  rating?: number;
 }) {
   const details = await inspectImage(input.buffer);
+  const perceptualHash = await computePerceptualHash(input.buffer);
   const paths = getDataPaths();
   const id = crypto.randomUUID();
   const storageName = `${id}.${details.extension}`;
@@ -105,6 +109,9 @@ export async function storeImageBuffer(input: {
       createdAt,
       groupId: input.groupId ?? null,
       keywords: input.keywords ?? [],
+      favorite: input.favorite,
+      rating: input.rating,
+      perceptualHash,
     };
     return insertImage(record);
   } catch (error) {
@@ -121,6 +128,7 @@ export async function storeImageBuffer(input: {
 export async function deleteStoredImage(id: string) {
   const image = getStoredImage(id);
   if (!image) throw new HttpError(404, "图片不存在");
+  if (!image.deletedAt) throw new HttpError(409, "请先将图片移入回收站");
   const paths = getDataPaths();
   const original = path.join(paths.originals, image.storageName);
   const thumbnail = path.join(paths.thumbnails, image.thumbnailName);

@@ -15,6 +15,10 @@ type ImageRow = {
   width: number;
   height: number;
   createdAt: string;
+  deletedAt: string | null;
+  favorite: number;
+  rating: number;
+  perceptualHash: string | null;
   groupId: string | null;
   groupName: string | null;
   storageName: string;
@@ -37,7 +41,7 @@ export function listGroups(): GroupItem[] {
     .prepare(
       `SELECT g.id, g.name, g.created_at AS createdAt, COUNT(i.id) AS count
        FROM groups g
-       LEFT JOIN images i ON i.group_id = g.id
+       LEFT JOIN images i ON i.group_id = g.id AND i.deleted_at IS NULL
        GROUP BY g.id
        ORDER BY g.name COLLATE NOCASE ASC`,
     )
@@ -47,11 +51,14 @@ export function listGroups(): GroupItem[] {
 export function getLibraryStats() {
   return getDb()
     .prepare(
-      `SELECT COUNT(*) AS total,
-       COALESCE(SUM(CASE WHEN group_id IS NULL THEN 1 ELSE 0 END), 0) AS ungrouped
+      `SELECT
+       COALESCE(SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END), 0) AS total,
+       COALESCE(SUM(CASE WHEN deleted_at IS NULL AND group_id IS NULL THEN 1 ELSE 0 END), 0) AS ungrouped,
+       COALESCE(SUM(CASE WHEN deleted_at IS NULL AND is_favorite = 1 THEN 1 ELSE 0 END), 0) AS favorites,
+       COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS trash
        FROM images`,
     )
-    .get() as { total: number; ungrouped: number };
+    .get() as { total: number; ungrouped: number; favorites: number; trash: number };
 }
 
 export function createGroup(name: string) {
@@ -98,7 +105,7 @@ export function assertGroupExists(groupId: string | null | undefined) {
 }
 
 function encodeCursor(row: ImageRow) {
-  return Buffer.from(JSON.stringify([row.createdAt, row.id])).toString("base64url");
+  return Buffer.from(JSON.stringify([row.deletedAt ?? row.createdAt, row.id])).toString("base64url");
 }
 
 function decodeCursor(cursor: string | null | undefined) {
@@ -122,6 +129,16 @@ function decodeCursor(cursor: string | null | undefined) {
 function buildFilter(filters: ImageFilters, includeCursor: boolean) {
   const clauses: string[] = [];
   const values: SqlValue[] = [];
+  const sortColumn = filters.trash === "only" ? "i.deleted_at" : "i.created_at";
+
+  if (filters.trash === "only") clauses.push("i.deleted_at IS NOT NULL");
+  else if (filters.trash !== "include") clauses.push("i.deleted_at IS NULL");
+
+  if (filters.favorite) clauses.push("i.is_favorite = 1");
+  if (filters.minRating) {
+    clauses.push("i.rating >= ?");
+    values.push(Math.min(5, Math.max(1, filters.minRating)));
+  }
 
   if (filters.groupId === null) {
     clauses.push("i.group_id IS NULL");
@@ -144,7 +161,7 @@ function buildFilter(filters: ImageFilters, includeCursor: boolean) {
   if (includeCursor) {
     const cursor = decodeCursor(filters.cursor);
     if (cursor) {
-      clauses.push("(i.created_at < ? OR (i.created_at = ? AND i.id < ?))");
+      clauses.push(`(${sortColumn} < ? OR (${sortColumn} = ? AND i.id < ?))`);
       values.push(cursor[0], cursor[0], cursor[1]);
     }
   }
@@ -152,6 +169,7 @@ function buildFilter(filters: ImageFilters, includeCursor: boolean) {
   return {
     where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
     values,
+    sortColumn,
   };
 }
 
@@ -183,6 +201,9 @@ function hydrateImages(rows: ImageRow[], db: Database.Database = getDb()): Image
     width: row.width,
     height: row.height,
     createdAt: row.createdAt,
+    deletedAt: row.deletedAt,
+    favorite: Boolean(row.favorite),
+    rating: row.rating,
     group:
       row.groupId && row.groupName ? { id: row.groupId, name: row.groupName } : null,
     keywords: keywordMap.get(row.id) ?? [],
@@ -194,6 +215,8 @@ function hydrateImages(rows: ImageRow[], db: Database.Database = getDb()): Image
 const IMAGE_SELECT = `
   SELECT i.id, i.original_name AS originalName, i.mime_type AS mimeType,
     i.byte_size AS byteSize, i.width, i.height, i.created_at AS createdAt,
+    i.deleted_at AS deletedAt, i.is_favorite AS favorite, i.rating,
+    i.perceptual_hash AS perceptualHash,
     i.group_id AS groupId, g.name AS groupName, i.storage_name AS storageName,
     i.thumbnail_name AS thumbnailName, i.extension
   FROM images i
@@ -213,7 +236,7 @@ export function listImages(filters: ImageFilters = {}): ImageListResult {
   const rows = db
     .prepare(
       `${IMAGE_SELECT} ${pageFilter.where}
-       ORDER BY i.created_at DESC, i.id DESC LIMIT ?`,
+       ORDER BY ${pageFilter.sortColumn} DESC, i.id DESC LIMIT ?`,
     )
     .all(...pageFilter.values, limit + 1) as ImageRow[];
   const hasMore = rows.length > limit;
@@ -231,23 +254,29 @@ export function listImageIds(filters: ImageFilters = {}) {
   const rows = getDb()
     .prepare(
       `SELECT i.id FROM images i ${query.where}
-       ORDER BY i.created_at DESC, i.id DESC LIMIT 10000`,
+       ORDER BY ${query.sortColumn} DESC, i.id DESC LIMIT 10000`,
     )
     .all(...query.values) as Array<{ id: string }>;
   return rows.map((row) => row.id);
 }
 
-export function getImagesByIds(ids?: string[]) {
+export function getImagesByIds(ids?: string[], options: { includeDeleted?: boolean } = {}) {
   const db = getDb();
   let rows: ImageRow[];
   if (ids) {
     if (!ids.length) return [];
     const placeholders = ids.map(() => "?").join(",");
     rows = db
-      .prepare(`${IMAGE_SELECT} WHERE i.id IN (${placeholders}) ORDER BY i.created_at DESC`)
+      .prepare(
+        `${IMAGE_SELECT} WHERE i.id IN (${placeholders})${options.includeDeleted ? "" : " AND i.deleted_at IS NULL"} ORDER BY i.created_at DESC`,
+      )
       .all(...ids) as ImageRow[];
   } else {
-    rows = db.prepare(`${IMAGE_SELECT} ORDER BY i.created_at DESC, i.id DESC`).all() as ImageRow[];
+    rows = db
+      .prepare(
+        `${IMAGE_SELECT}${options.includeDeleted ? "" : " WHERE i.deleted_at IS NULL"} ORDER BY i.created_at DESC, i.id DESC`,
+      )
+      .all() as ImageRow[];
   }
   return hydrateImages(rows, db);
 }
@@ -303,6 +332,9 @@ export type InsertImageInput = {
   createdAt: string;
   groupId: string | null;
   keywords: string[];
+  favorite?: boolean;
+  rating?: number;
+  perceptualHash?: string | null;
 };
 
 export function insertImage(input: InsertImageInput) {
@@ -312,8 +344,9 @@ export function insertImage(input: InsertImageInput) {
     db.prepare(
       `INSERT INTO images (
         id, storage_name, thumbnail_name, original_name, mime_type, extension,
-        byte_size, width, height, created_at, group_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        byte_size, width, height, created_at, group_id, is_favorite, rating,
+        perceptual_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.storageName,
@@ -326,6 +359,9 @@ export function insertImage(input: InsertImageInput) {
       input.height,
       input.createdAt,
       input.groupId,
+      input.favorite ? 1 : 0,
+      input.rating ?? 0,
+      input.perceptualHash ?? null,
     );
     replaceImageKeywords(db, input.id, input.keywords);
   });
@@ -335,10 +371,10 @@ export function insertImage(input: InsertImageInput) {
 
 export function updateImage(
   id: string,
-  update: { keywords?: string[]; groupId?: string | null },
+  update: { keywords?: string[]; groupId?: string | null; favorite?: boolean; rating?: number },
 ) {
   const db = getDb();
-  const exists = db.prepare("SELECT 1 FROM images WHERE id = ?").get(id);
+  const exists = db.prepare("SELECT 1 FROM images WHERE id = ? AND deleted_at IS NULL").get(id);
   if (!exists) throw new HttpError(404, "图片不存在");
   assertGroupExists(update.groupId);
   const apply = db.transaction(() => {
@@ -346,6 +382,12 @@ export function updateImage(
       db.prepare("UPDATE images SET group_id = ? WHERE id = ?").run(update.groupId, id);
     }
     if (update.keywords !== undefined) replaceImageKeywords(db, id, update.keywords);
+    if (update.favorite !== undefined) {
+      db.prepare("UPDATE images SET is_favorite = ? WHERE id = ?").run(update.favorite ? 1 : 0, id);
+    }
+    if (update.rating !== undefined) {
+      db.prepare("UPDATE images SET rating = ? WHERE id = ?").run(update.rating, id);
+    }
   });
   apply();
   return getImagesByIds([id])[0];
@@ -396,10 +438,64 @@ export function moveImages(ids: string[], groupId: string | null) {
   assertGroupExists(groupId);
   if (!ids.length) return;
   const placeholders = ids.map(() => "?").join(",");
-  getDb().prepare(`UPDATE images SET group_id = ? WHERE id IN (${placeholders})`).run(
+  getDb().prepare(`UPDATE images SET group_id = ? WHERE deleted_at IS NULL AND id IN (${placeholders})`).run(
     groupId,
     ...ids,
   );
+}
+
+export function trashImages(ids: string[]) {
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  return getDb()
+    .prepare(
+      `UPDATE images SET deleted_at = ? WHERE deleted_at IS NULL AND id IN (${placeholders})`,
+    )
+    .run(new Date().toISOString(), ...ids).changes;
+}
+
+export function restoreImages(ids: string[]) {
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  return getDb()
+    .prepare(`UPDATE images SET deleted_at = NULL WHERE deleted_at IS NOT NULL AND id IN (${placeholders})`)
+    .run(...ids).changes;
+}
+
+export function setImagesFavorite(ids: string[], favorite: boolean) {
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  return getDb()
+    .prepare(`UPDATE images SET is_favorite = ? WHERE deleted_at IS NULL AND id IN (${placeholders})`)
+    .run(favorite ? 1 : 0, ...ids).changes;
+}
+
+export function setImagesRating(ids: string[], rating: number) {
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  return getDb()
+    .prepare(`UPDATE images SET rating = ? WHERE deleted_at IS NULL AND id IN (${placeholders})`)
+    .run(rating, ...ids).changes;
+}
+
+export function listStoredImagesWithoutHash() {
+  return getDb()
+    .prepare(`${IMAGE_SELECT} WHERE i.deleted_at IS NULL AND i.perceptual_hash IS NULL`)
+    .all() as StoredImageRow[];
+}
+
+export function listHashedImages() {
+  return getDb()
+    .prepare(
+      "SELECT id, perceptual_hash AS perceptualHash FROM images WHERE deleted_at IS NULL AND perceptual_hash IS NOT NULL",
+    )
+    .all() as Array<{ id: string; perceptualHash: string }>;
+}
+
+export function setImagePerceptualHash(id: string, perceptualHash: string) {
+  getDb()
+    .prepare("UPDATE images SET perceptual_hash = ? WHERE id = ?")
+    .run(perceptualHash, id);
 }
 
 export function listKeywordSuggestions(query: string) {
@@ -407,11 +503,13 @@ export function listKeywordSuggestions(query: string) {
   const escaped = normalized.replace(/[\\%_]/g, "\\$&");
   return getDb()
     .prepare(
-      `SELECT k.name, COUNT(ik.image_id) AS count
+      `SELECT k.name, COUNT(i.id) AS count
        FROM keywords k
        LEFT JOIN image_keywords ik ON ik.keyword_id = k.id
+       LEFT JOIN images i ON i.id = ik.image_id AND i.deleted_at IS NULL
        WHERE k.normalized_name LIKE ? ESCAPE '\\'
        GROUP BY k.id
+       HAVING COUNT(i.id) > 0
        ORDER BY count DESC, k.name COLLATE NOCASE ASC
        LIMIT 12`,
     )

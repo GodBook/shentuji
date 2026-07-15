@@ -10,9 +10,13 @@ export const dynamic = "force-dynamic";
 
 function filtersFromUrl(url: URL) {
   const group = url.searchParams.get("group");
+  const rating = Number(url.searchParams.get("rating") || 0);
   return {
     groupId: group === "ungrouped" ? null : group || undefined,
     keywords: url.searchParams.getAll("keyword"),
+    trash: url.searchParams.get("trash") === "only" ? ("only" as const) : ("exclude" as const),
+    favorite: url.searchParams.get("favorite") === "1",
+    minRating: Number.isFinite(rating) ? rating : 0,
     cursor: url.searchParams.get("cursor"),
     limit: Number(url.searchParams.get("limit") || 40),
   };

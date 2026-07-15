@@ -34,6 +34,10 @@ const SCHEMA = `
     width INTEGER NOT NULL CHECK (width > 0),
     height INTEGER NOT NULL CHECK (height > 0),
     created_at TEXT NOT NULL,
+    deleted_at TEXT,
+    is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1)),
+    rating INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 5),
+    perceptual_hash TEXT,
     group_id TEXT REFERENCES groups(id) ON DELETE SET NULL
   );
   CREATE INDEX IF NOT EXISTS images_created_idx ON images(created_at DESC, id DESC);
@@ -63,7 +67,37 @@ export function openDatabase(filename: string) {
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA);
+  migrateImages(db);
   return db;
+}
+
+function migrateImages(db: Database.Database) {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(images)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  const statements: string[] = [];
+  if (!columns.has("deleted_at")) statements.push("ALTER TABLE images ADD COLUMN deleted_at TEXT");
+  if (!columns.has("is_favorite")) {
+    statements.push(
+      "ALTER TABLE images ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1))",
+    );
+  }
+  if (!columns.has("rating")) {
+    statements.push(
+      "ALTER TABLE images ADD COLUMN rating INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 5)",
+    );
+  }
+  if (!columns.has("perceptual_hash")) {
+    statements.push("ALTER TABLE images ADD COLUMN perceptual_hash TEXT");
+  }
+  if (statements.length) db.transaction(() => statements.forEach((sql) => db.exec(sql)))();
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS images_deleted_idx ON images(deleted_at, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS images_favorite_idx ON images(is_favorite, deleted_at, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS images_perceptual_hash_idx ON images(perceptual_hash);
+  `);
 }
 
 export function getDb() {

@@ -28,14 +28,40 @@ test("setup, upload, search, lightbox and selection flow", async ({ page }) => {
   await page.getByRole("button", { name: /收藏 1 张图片/ }).click();
   await expect(page.getByRole("status")).toContainText("已收藏 1 张图片");
 
+  await page.getByRole("button", { name: /收神图/ }).first().click();
+  await page.locator('input[type="file"][accept*="image/jpeg"]').setInputFiles({
+    name: "playwright-similar.png",
+    mimeType: "image/png",
+    buffer: PNG,
+  });
+  await page.getByRole("button", { name: /收藏 1 张图片/ }).click();
+  await expect(page.getByRole("status")).toContainText("已收藏 1 张图片");
+
   const search = page.getByLabel("搜索关键字");
   await search.fill("自动化");
   await search.press("Enter");
   await expect(page.getByRole("button", { name: /查看 playwright-shentu.png/ }).first()).toBeVisible();
   await page.getByRole("button", { name: /查看 playwright-shentu.png/ }).first().click();
   await expect(page.getByText("整理信息")).toBeVisible();
+  await page.getByRole("button", { name: "收藏", exact: true }).click();
+  await page.getByRole("radio", { name: "5 星" }).click();
+  await page.getByRole("button", { name: "保存整理" }).click();
+  await expect(page.getByRole("status")).toContainText("图片信息已保存");
+  await page.getByRole("button", { name: "检测相似图片" }).click();
+  await expect(page.getByText(/发现 \d+ 张相似图片/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /查看相似图片 playwright-similar.png，相似度 100%/ })).toBeVisible();
   await page.getByRole("button", { name: "关闭" }).click();
 
+  await page.getByRole("button", { name: /我的收藏/ }).click();
+  await expect(page.getByRole("button", { name: /查看 playwright-shentu.png/ }).first()).toBeVisible();
   await page.getByRole("button", { name: /选择playwright-shentu.png/ }).first().click();
   await expect(page.getByText("已选择")).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "将所选移入回收站" }).click();
+  await expect(page.getByRole("status")).toContainText("所选图片已移入回收站");
+
+  await page.getByRole("button", { name: /回收站/ }).click();
+  await page.getByRole("button", { name: /查看 playwright-shentu.png/ }).first().click();
+  await page.getByRole("button", { name: "恢复到图库" }).click();
+  await expect(page.getByRole("status")).toContainText("图片已恢复到图库");
 });

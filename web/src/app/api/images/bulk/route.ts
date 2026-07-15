@@ -5,6 +5,10 @@ import {
   addKeywordsToImages,
   moveImages,
   removeKeywordsFromImages,
+  restoreImages,
+  setImagesFavorite,
+  setImagesRating,
+  trashImages,
 } from "@/lib/library";
 import { bulkActionSchema } from "@/lib/validation";
 
@@ -23,7 +27,15 @@ export async function POST(request: Request) {
       case "moveGroup":
         moveImages(input.ids, input.groupId);
         return json({ updated: input.ids.length });
+      case "setFavorite":
+        return json({ updated: setImagesFavorite(input.ids, input.favorite) });
+      case "setRating":
+        return json({ updated: setImagesRating(input.ids, input.rating) });
       case "delete":
+        return json({ trashed: trashImages(input.ids) });
+      case "restore":
+        return json({ restored: restoreImages(input.ids) });
+      case "deletePermanent":
         return json(await deleteStoredImages(input.ids));
     }
   } catch (error) {

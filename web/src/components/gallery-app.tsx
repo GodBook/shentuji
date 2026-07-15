@@ -9,14 +9,17 @@ import {
   Folder,
   FolderCog,
   Hash,
+  Heart,
   ImageIcon,
   Images,
   LoaderCircle,
   LogOut,
   Plus,
+  RotateCcw,
   Search,
   Sparkles,
   Square,
+  Star,
   Trash2,
   Upload,
   X,
@@ -27,6 +30,7 @@ import { UploadDialog } from "@/components/upload-dialog";
 import type { GroupItem, ImageItem, ImageListResult, ImportReport } from "@/lib/types";
 
 type Notice = { message: string; kind: "success" | "error" } | null;
+type GalleryView = "library" | "favorites" | "trash";
 
 async function responseJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T & { error?: string };
@@ -48,8 +52,12 @@ export function GalleryApp() {
   const [total, setTotal] = useState(0);
   const [allCount, setAllCount] = useState(0);
   const [ungroupedCount, setUngroupedCount] = useState(0);
+  const [favoritesCount, setFavoritesCount] = useState(0);
+  const [trashCount, setTrashCount] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [groupFilter, setGroupFilter] = useState("all");
+  const [view, setView] = useState<GalleryView>("library");
+  const [ratingFilter, setRatingFilter] = useState(0);
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Array<{ name: string; count: number }>>([]);
@@ -63,6 +71,7 @@ export function GalleryApp() {
   const [notice, setNotice] = useState<Notice>(null);
   const [batchKeywords, setBatchKeywords] = useState("");
   const [batchGroup, setBatchGroup] = useState("");
+  const [batchRating, setBatchRating] = useState("");
   const [batchBusy, setBatchBusy] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -70,22 +79,27 @@ export function GalleryApp() {
     (base: string, cursor?: string | null) => {
       const params = new URLSearchParams();
       if (groupFilter !== "all") params.set("group", groupFilter);
+      if (view === "favorites") params.set("favorite", "1");
+      if (view === "trash") params.set("trash", "only");
+      if (ratingFilter > 0) params.set("rating", String(ratingFilter));
       selectedKeywords.forEach((keyword) => params.append("keyword", keyword));
       if (cursor) params.set("cursor", cursor);
       const text = params.toString();
       return text ? `${base}?${text}` : base;
     },
-    [groupFilter, selectedKeywords],
+    [groupFilter, ratingFilter, selectedKeywords, view],
   );
 
   const loadGroups = useCallback(async () => {
     const result = await responseJson<{
       groups: GroupItem[];
-      stats: { total: number; ungrouped: number };
+      stats: { total: number; ungrouped: number; favorites: number; trash: number };
     }>(await fetch("/api/groups"));
     setGroups(result.groups);
     setAllCount(result.stats.total);
     setUngroupedCount(result.stats.ungrouped);
+    setFavoritesCount(result.stats.favorites);
+    setTrashCount(result.stats.trash);
   }, []);
 
   const fetchImages = useCallback(
@@ -99,7 +113,7 @@ export function GalleryApp() {
         setImages((current) => (append ? [...current, ...result.items] : result.items));
         setTotal(result.total);
         setNextCursor(result.nextCursor);
-        if (groupFilter === "all" && selectedKeywords.length === 0) setAllCount(result.total);
+        if (view === "library" && groupFilter === "all" && selectedKeywords.length === 0 && ratingFilter === 0) setAllCount(result.total);
         if (!append) setSelected(new Set());
       } catch (reason) {
         setNotice({
@@ -111,7 +125,7 @@ export function GalleryApp() {
         setLoadingMore(false);
       }
     },
-    [buildFilterUrl, groupFilter, selectedKeywords.length],
+    [buildFilterUrl, groupFilter, ratingFilter, selectedKeywords.length, view],
   );
 
   useEffect(() => {
@@ -194,6 +208,46 @@ export function GalleryApp() {
     });
   }
 
+  function chooseView(next: GalleryView) {
+    setView(next);
+    setGroupFilter("all");
+    setSelected(new Set());
+  }
+
+  async function toggleFavorite(image: ImageItem) {
+    try {
+      const result = await responseJson<{ image: ImageItem }>(
+        await fetch(`/api/images/${image.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ favorite: !image.favorite }),
+        }),
+      );
+      setImages((items) => items.map((item) => item.id === result.image.id ? result.image : item));
+      if (activeImage?.id === result.image.id) setActiveImage(result.image);
+      if (view === "favorites" && !result.image.favorite) {
+        await fetchImages(null, false);
+      }
+      await loadGroups();
+    } catch (reason) {
+      setNotice({ kind: "error", message: reason instanceof Error ? reason.message : "收藏操作失败" });
+    }
+  }
+
+  async function emptyTrash() {
+    if (!window.confirm(`永久删除回收站中的 ${trashCount} 张图片？此操作无法撤销。`)) return;
+    setBatchBusy(true);
+    try {
+      await responseJson(await fetch("/api/trash", { method: "DELETE" }));
+      setActiveImage(null);
+      await refresh("回收站已清空");
+    } catch (reason) {
+      setNotice({ kind: "error", message: reason instanceof Error ? reason.message : "清空回收站失败" });
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   async function runBulk(body: Record<string, unknown>, message: string) {
     setBatchBusy(true);
     try {
@@ -203,6 +257,7 @@ export function GalleryApp() {
         body: JSON.stringify({ ...body, ids: Array.from(selected) }),
       }));
       setBatchKeywords("");
+      setBatchRating("");
       await refresh(message);
     } catch (reason) {
       setNotice({ kind: "error", message: reason instanceof Error ? reason.message : "批量操作失败" });
@@ -260,6 +315,7 @@ export function GalleryApp() {
 
   const activeIndex = activeImage ? images.findIndex((image) => image.id === activeImage.id) : -1;
   const currentGroup = groups.find((group) => group.id === groupFilter);
+  const heading = view === "trash" ? "回收站" : view === "favorites" ? "我的收藏" : currentGroup?.name ?? (groupFilter === "ungrouped" ? "未分组" : "全部神图");
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
       <aside className="border-b border-white/8 bg-[#101113]/85 px-4 py-4 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:px-4 lg:py-6">
@@ -272,11 +328,17 @@ export function GalleryApp() {
         </div>
 
         <nav className="mt-4 flex gap-2 overflow-x-auto pb-1 lg:mt-7 lg:block lg:space-y-1" aria-label="图库分组">
-          <button type="button" onClick={() => setGroupFilter("all")} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${groupFilter === "all" ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Images size={16} /><span className="lg:flex-1 lg:text-left">全部神图</span><span className="text-xs opacity-45">{allCount}</span></button>
-          <button type="button" onClick={() => setGroupFilter("ungrouped")} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${groupFilter === "ungrouped" ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Folder size={16} /><span className="lg:flex-1 lg:text-left">未分组</span><span className="text-xs opacity-45">{ungroupedCount}</span></button>
-          {groups.map((group) => (
-            <button key={group.id} type="button" onClick={() => setGroupFilter(group.id)} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${groupFilter === group.id ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Folder size={16} /><span className="max-w-28 truncate lg:flex-1 lg:text-left">{group.name}</span><span className="text-xs opacity-45">{group.count}</span></button>
-          ))}
+          <button type="button" onClick={() => chooseView("library")} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${view === "library" && groupFilter === "all" ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Images size={16} /><span className="lg:flex-1 lg:text-left">全部神图</span><span className="text-xs opacity-45">{allCount}</span></button>
+          <button type="button" onClick={() => chooseView("favorites")} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${view === "favorites" ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Heart size={16} /><span className="lg:flex-1 lg:text-left">我的收藏</span><span className="text-xs opacity-45">{favoritesCount}</span></button>
+          <button type="button" onClick={() => chooseView("trash")} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${view === "trash" ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Trash2 size={16} /><span className="lg:flex-1 lg:text-left">回收站</span><span className="text-xs opacity-45">{trashCount}</span></button>
+          {view === "library" && (
+            <>
+              <button type="button" onClick={() => setGroupFilter("ungrouped")} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${groupFilter === "ungrouped" ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Folder size={16} /><span className="lg:flex-1 lg:text-left">未分组</span><span className="text-xs opacity-45">{ungroupedCount}</span></button>
+              {groups.map((group) => (
+                <button key={group.id} type="button" onClick={() => setGroupFilter(group.id)} className={`flex shrink-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition lg:w-full ${groupFilter === group.id ? "bg-white/9 font-bold text-white" : "text-white/48 hover:bg-white/5 hover:text-white"}`}><Folder size={16} /><span className="max-w-28 truncate lg:flex-1 lg:text-left">{group.name}</span><span className="text-xs opacity-45">{group.count}</span></button>
+              ))}
+            </>
+          )}
         </nav>
 
         <div className="mt-5 hidden border-t border-white/8 pt-5 lg:block">
@@ -292,8 +354,9 @@ export function GalleryApp() {
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
               <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[.24em] text-[#d7ff45]"><Sparkles size={12} /> Your divine collection</div>
-              <h1 className="text-3xl font-black tracking-[-.045em] sm:text-4xl">{currentGroup?.name ?? (groupFilter === "ungrouped" ? "未分组" : "全部神图")}</h1>
-              <p className="mt-2 text-sm text-white/38">{total} 张值得反复看的图</p>
+              <h1 className="text-3xl font-black tracking-[-.045em] sm:text-4xl">{heading}</h1>
+              <p className="mt-2 text-sm text-white/38">{view === "trash" ? `${total} 张可恢复的图片` : `${total} 张值得反复看的图`}</p>
+              {view === "trash" && trashCount > 0 && <button type="button" disabled={batchBusy} onClick={() => void emptyTrash()} className="mt-3 inline-flex items-center gap-2 rounded-xl border border-red-400/20 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/10 disabled:opacity-50"><Trash2 size={14} />清空回收站</button>}
             </div>
             <div className="flex items-center gap-2 lg:hidden">
               <button type="button" onClick={() => setGroupsOpen(true)} className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 text-white/55" aria-label="管理分组"><FolderCog size={17} /></button>
@@ -318,6 +381,10 @@ export function GalleryApp() {
               )}
             </div>
             <div className="mt-2 flex items-center justify-between border-t border-white/8 px-1 pt-2 sm:mt-0 sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0">
+              <select aria-label="最低评分" value={ratingFilter} onChange={(event) => setRatingFilter(Number(event.target.value))} className="rounded-xl border border-white/8 bg-[#17181b] px-2 py-2 text-xs text-white/55">
+                <option value={0}>全部评分</option>
+                {[1, 2, 3, 4, 5].map((rating) => <option key={rating} value={rating}>{rating} 星以上</option>)}
+              </select>
               <button type="button" onClick={() => void selectAllFiltered()} className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-white/50 hover:bg-white/5 hover:text-white"><CheckSquare2 size={15} />全选结果</button>
               {selectedKeywords.length > 0 && <button type="button" onClick={() => setSelectedKeywords([])} className="rounded-xl px-3 py-2 text-xs text-white/35 hover:text-white">清除筛选</button>}
             </div>
@@ -336,6 +403,8 @@ export function GalleryApp() {
                 return (
                   <article key={image.id} className={`masonry-card float-in group relative overflow-hidden rounded-2xl border bg-[#151619] transition ${checked ? "border-[#d7ff45] shadow-[0_0_0_2px_rgba(215,255,69,.18)]" : "border-white/8 hover:-translate-y-0.5 hover:border-white/20"}`} style={{ animationDelay: `${Math.min(index, 12) * 24}ms` }}>
                     <button type="button" onClick={() => toggleSelected(image.id)} className={`absolute left-2.5 top-2.5 z-10 grid h-8 w-8 place-items-center rounded-full border backdrop-blur transition ${checked ? "border-[#d7ff45] bg-[#d7ff45] text-black" : "border-white/20 bg-black/45 text-white/70 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"}`} aria-label={`${checked ? "取消选择" : "选择"}${image.originalName}`} aria-pressed={checked}>{checked ? <Check size={16} strokeWidth={3} /> : <Square size={15} />}</button>
+                    {view !== "trash" && <button type="button" onClick={() => void toggleFavorite(image)} className={`absolute right-2.5 top-2.5 z-10 grid h-8 w-8 place-items-center rounded-full border backdrop-blur transition ${image.favorite ? "border-rose-300/45 bg-rose-400/20 text-rose-200" : "border-white/20 bg-black/45 text-white/55 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"}`} aria-label={`${image.favorite ? "取消收藏" : "收藏"}${image.originalName}`} aria-pressed={image.favorite}><Heart size={15} fill={image.favorite ? "currentColor" : "none"} /></button>}
+                    {image.rating > 0 && <span className="absolute right-2.5 top-12 z-10 flex items-center gap-1 rounded-lg bg-black/60 px-2 py-1 text-[10px] font-bold text-amber-200 backdrop-blur"><Star size={11} fill="currentColor" />{image.rating}</span>}
                     <button type="button" onClick={() => setActiveImage(image)} className="block w-full text-left" aria-label={`查看 ${image.originalName}`}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={image.thumbnailUrl} alt={[image.originalName, ...image.keywords].join("，")} width={image.width} height={image.height} loading="lazy" className="h-auto w-full bg-white/[0.025] object-cover transition duration-500 group-hover:scale-[1.018]" />
@@ -354,7 +423,7 @@ export function GalleryApp() {
           </>
         ) : (
           <section className="mt-8 grid min-h-[52vh] place-items-center rounded-[2rem] border border-dashed border-white/10 bg-white/[0.018] p-8 text-center">
-            <div><span className="mx-auto grid h-16 w-16 place-items-center rounded-3xl bg-white/5 text-white/25"><ImageIcon size={28} /></span><h2 className="mt-5 text-xl font-black">这里还空空如也</h2><p className="mt-2 text-sm text-white/38">{selectedKeywords.length || groupFilter !== "all" ? "换个关键字或分组看看" : "从你今天看到的第一张神图开始"}</p>{!selectedKeywords.length && groupFilter === "all" && <button type="button" onClick={() => setUploadOpen(true)} className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-[#d7ff45] px-5 py-3 text-sm font-black text-black"><Upload size={16} />添加图片</button>}</div>
+            <div><span className="mx-auto grid h-16 w-16 place-items-center rounded-3xl bg-white/5 text-white/25">{view === "trash" ? <Trash2 size={28} /> : view === "favorites" ? <Heart size={28} /> : <ImageIcon size={28} />}</span><h2 className="mt-5 text-xl font-black">{view === "trash" ? "回收站是空的" : view === "favorites" ? "还没有收藏图片" : "这里还空空如也"}</h2><p className="mt-2 text-sm text-white/38">{selectedKeywords.length || groupFilter !== "all" || ratingFilter > 0 ? "换个筛选条件看看" : view === "trash" ? "移入回收站的图片会显示在这里" : view === "favorites" ? "点击图片右上角的爱心即可收藏" : "从你今天看到的第一张神图开始"}</p>{view === "library" && !selectedKeywords.length && groupFilter === "all" && ratingFilter === 0 && <button type="button" onClick={() => setUploadOpen(true)} className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-[#d7ff45] px-5 py-3 text-sm font-black text-black"><Upload size={16} />添加图片</button>}</div>
           </section>
         )}
       </main>
@@ -365,13 +434,25 @@ export function GalleryApp() {
         <div className="fixed inset-x-3 bottom-3 z-40 mx-auto max-w-5xl rounded-[1.4rem] border border-white/12 bg-[#202125]/95 p-2.5 shadow-2xl backdrop-blur-xl sm:bottom-5 sm:flex sm:items-center sm:gap-2">
           <div className="flex shrink-0 items-center justify-between px-2 py-1 sm:justify-start sm:gap-2"><span className="grid h-7 min-w-7 place-items-center rounded-lg bg-[#d7ff45] px-1.5 text-xs font-black text-black">{selected.size}</span><span className="text-xs font-bold text-white/65">已选择</span><button type="button" onClick={() => setSelected(new Set())} className="ml-2 text-white/35 hover:text-white" aria-label="清除选择"><X size={15} /></button></div>
           <div className="mt-2 flex min-w-0 flex-1 flex-wrap gap-2 sm:mt-0">
-            <input aria-label="批量关键字" className="min-w-32 flex-1 rounded-xl border border-white/8 bg-black/25 px-3 py-2 text-xs" value={batchKeywords} onChange={(event) => setBatchKeywords(event.target.value)} placeholder="批量关键字，逗号分隔" />
-            <button type="button" disabled={batchBusy || !keywordValues(batchKeywords).length} onClick={() => void runBulk({ action: "addKeywords", keywords: keywordValues(batchKeywords) }, "关键字已批量添加")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">+ 关键词</button>
-            <button type="button" disabled={batchBusy || !keywordValues(batchKeywords).length} onClick={() => void runBulk({ action: "removeKeywords", keywords: keywordValues(batchKeywords) }, "关键字已批量移除")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">− 关键词</button>
-            <select aria-label="批量移动到分组" className="min-w-28 rounded-xl border border-white/8 bg-[#17181b] px-3 py-2 text-xs" value={batchGroup} onChange={(event) => setBatchGroup(event.target.value)}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>
-            <button type="button" disabled={batchBusy} onClick={() => void runBulk({ action: "moveGroup", groupId: batchGroup || null }, "图片已移动")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">移动</button>
-            <button type="button" disabled={batchBusy} onClick={() => void exportArchive(Array.from(selected))} className="grid h-9 w-9 place-items-center rounded-xl bg-white/8 hover:bg-white/12" aria-label="导出所选"><Download size={15} /></button>
-            <button type="button" disabled={batchBusy} onClick={() => { if (window.confirm(`永久删除选中的 ${selected.size} 张图片？`)) void runBulk({ action: "delete" }, "所选图片已删除"); }} className="grid h-9 w-9 place-items-center rounded-xl text-red-300 hover:bg-red-500/12" aria-label="删除所选"><Trash2 size={15} /></button>
+            {view === "trash" ? (
+              <>
+                <button type="button" disabled={batchBusy} onClick={() => void runBulk({ action: "restore" }, "所选图片已恢复")} className="flex items-center gap-2 rounded-xl bg-[#d7ff45] px-3 py-2 text-xs font-black text-black disabled:opacity-35"><RotateCcw size={14} />恢复</button>
+                <button type="button" disabled={batchBusy} onClick={() => { if (window.confirm(`永久删除选中的 ${selected.size} 张图片？此操作无法撤销。`)) void runBulk({ action: "deletePermanent" }, "所选图片已永久删除"); }} className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/12 disabled:opacity-35"><Trash2 size={14} />永久删除</button>
+              </>
+            ) : (
+              <>
+                <input aria-label="批量关键字" className="min-w-32 flex-1 rounded-xl border border-white/8 bg-black/25 px-3 py-2 text-xs" value={batchKeywords} onChange={(event) => setBatchKeywords(event.target.value)} placeholder="批量关键字，逗号分隔" />
+                <button type="button" disabled={batchBusy || !keywordValues(batchKeywords).length} onClick={() => void runBulk({ action: "addKeywords", keywords: keywordValues(batchKeywords) }, "关键字已批量添加")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">+ 关键词</button>
+                <button type="button" disabled={batchBusy || !keywordValues(batchKeywords).length} onClick={() => void runBulk({ action: "removeKeywords", keywords: keywordValues(batchKeywords) }, "关键字已批量移除")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">− 关键词</button>
+                <select aria-label="批量移动到分组" className="min-w-28 rounded-xl border border-white/8 bg-[#17181b] px-3 py-2 text-xs" value={batchGroup} onChange={(event) => setBatchGroup(event.target.value)}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>
+                <button type="button" disabled={batchBusy} onClick={() => void runBulk({ action: "moveGroup", groupId: batchGroup || null }, "图片已移动")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">移动</button>
+                <button type="button" disabled={batchBusy} onClick={() => void runBulk({ action: "setFavorite", favorite: true }, "所选图片已收藏")} className="grid h-9 w-9 place-items-center rounded-xl bg-white/8 text-rose-200 hover:bg-white/12" aria-label="收藏所选"><Heart size={15} /></button>
+                <select aria-label="批量评分" className="rounded-xl border border-white/8 bg-[#17181b] px-2 py-2 text-xs" value={batchRating} onChange={(event) => setBatchRating(event.target.value)}><option value="">评分</option><option value="0">清除评分</option>{[1, 2, 3, 4, 5].map((rating) => <option key={rating} value={rating}>{rating} 星</option>)}</select>
+                <button type="button" disabled={batchBusy || batchRating === ""} onClick={() => void runBulk({ action: "setRating", rating: Number(batchRating) }, "评分已批量更新")} className="rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-35">应用</button>
+                <button type="button" disabled={batchBusy} onClick={() => void exportArchive(Array.from(selected))} className="grid h-9 w-9 place-items-center rounded-xl bg-white/8 hover:bg-white/12" aria-label="导出所选"><Download size={15} /></button>
+                <button type="button" disabled={batchBusy} onClick={() => { if (window.confirm(`将选中的 ${selected.size} 张图片移入回收站？`)) void runBulk({ action: "delete" }, "所选图片已移入回收站"); }} className="grid h-9 w-9 place-items-center rounded-xl text-red-300 hover:bg-red-500/12" aria-label="将所选移入回收站"><Trash2 size={15} /></button>
+              </>
+            )}
           </div>
           {batchBusy && <LoaderCircle className="mx-2 hidden shrink-0 animate-spin text-[#d7ff45] sm:block" size={17} />}
         </div>
@@ -381,7 +462,7 @@ export function GalleryApp() {
 
       <UploadDialog open={uploadOpen} onClose={() => { setUploadOpen(false); setUploadSeed([]); }} groups={groups} seedFiles={uploadSeed} onComplete={(message) => void refresh(message)} />
       <GroupManager open={groupsOpen} onClose={() => setGroupsOpen(false)} groups={groups} onChanged={async (message) => refresh(message)} />
-      <ImageLightbox image={activeImage} groups={groups} hasPrevious={activeIndex > 0} hasNext={activeIndex >= 0 && activeIndex < images.length - 1} onClose={() => setActiveImage(null)} onNavigate={(direction) => { const next = images[activeIndex + direction]; if (next) setActiveImage(next); }} onUpdated={(updated) => { setImages((items) => items.map((item) => item.id === updated.id ? updated : item)); setActiveImage(updated); setNotice({ kind: "success", message: "图片信息已保存" }); void loadGroups(); }} onDeleted={() => { setActiveImage(null); void refresh("图片已删除"); }} />
+      <ImageLightbox image={activeImage} groups={groups} trashMode={view === "trash"} hasPrevious={activeIndex > 0} hasNext={activeIndex >= 0 && activeIndex < images.length - 1} onClose={() => setActiveImage(null)} onNavigate={(direction) => { const next = images[activeIndex + direction]; if (next) setActiveImage(next); }} onOpenImage={(image) => setActiveImage(image)} onUpdated={(updated) => { setActiveImage(updated); void refresh("图片信息已保存"); }} onDeleted={() => { setActiveImage(null); void refresh("图片已移入回收站"); }} onRestored={() => { setActiveImage(null); void refresh("图片已恢复到图库"); }} onPermanentDeleted={() => { setActiveImage(null); void refresh("图片已永久删除"); }} />
     </div>
   );
 }
