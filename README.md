@@ -1,6 +1,18 @@
-# 神图集 Android
+# 神图集
 
-“神图集”是一个完全离线、单用户的 Android 图片收藏 App。图片、关键字、分组和密码均保存在手机应用私有目录，不需要 Web 服务器。
+“神图集”是一个单用户图片收藏库，本仓库同时提供原生 Android App 和 Next.js 网页版。两端都支持关键字、分组、批量操作及兼容的 ZIP 备份格式。
+
+## 项目结构
+
+- 仓库根目录：原生 Android App（Kotlin + Jetpack Compose）
+- [`web/`](web/)：网页版（Next.js + TypeScript + SQLite）
+- [`artifacts/神图集-debug.apk`](artifacts/神图集-debug.apk)：可直接安装的 Android 调试版 APK
+
+网页版的运行、测试与数据目录说明请查看 [`web/README.md`](web/README.md)。
+
+## Android 版
+
+Android App 完全离线运行，图片、关键字、分组和密码均保存在手机应用私有目录，不需要 Web 服务器。
 
 ## 功能
 
